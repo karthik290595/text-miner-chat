@@ -32,31 +32,142 @@ export const PDFProcessor = ({ pdfs }: PDFProcessorProps) => {
   const [question, setQuestion] = useState('');
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
 
+  const extractKeyPoints = (text: string) => {
+    const sentences = text.split(/[.!?]+/).filter(s => s.trim().length > 20);
+    const paragraphs = text.split(/\n\s*\n/).filter(p => p.trim().length > 50);
+    
+    // Score sentences based on keywords and position
+    const keywordPatterns = [
+      /\b(conclusion|summary|result|finding|important|significant|key|main|primary|essential|critical)\b/i,
+      /\b(therefore|thus|however|moreover|furthermore|additionally|consequently)\b/i,
+      /\b(research|study|analysis|investigation|examination|review)\b/i,
+      /\b(method|approach|technique|strategy|process|procedure)\b/i,
+      /\b(data|evidence|information|facts|statistics|numbers)\b/i
+    ];
+    
+    const scoredSentences = sentences.map((sentence, index) => {
+      let score = 0;
+      
+      // Position bonus (first and last paragraphs are often important)
+      if (index < sentences.length * 0.1 || index > sentences.length * 0.9) score += 2;
+      
+      // Keyword scoring
+      keywordPatterns.forEach(pattern => {
+        const matches = sentence.match(pattern);
+        if (matches) score += matches.length;
+      });
+      
+      // Length scoring (moderate length sentences often contain key info)
+      const words = sentence.trim().split(/\s+/).length;
+      if (words >= 10 && words <= 30) score += 1;
+      
+      // Capitalize scoring (sentences with proper nouns might be important)
+      const capitalWords = sentence.match(/\b[A-Z][a-z]+/g);
+      if (capitalWords && capitalWords.length > 2) score += 1;
+      
+      return { sentence: sentence.trim(), score, index };
+    }).filter(item => item.sentence.length > 0);
+    
+    // Sort by score and return top sentences
+    return scoredSentences
+      .sort((a, b) => b.score - a.score)
+      .slice(0, Math.min(8, Math.ceil(sentences.length * 0.15)))
+      .sort((a, b) => a.index - b.index)
+      .map(item => item.sentence);
+  };
+
+  const identifyTopics = (text: string) => {
+    const topicKeywords = {
+      'Research & Methodology': /\b(research|study|methodology|analysis|investigation|experiment|survey|data collection)\b/gi,
+      'Results & Findings': /\b(results|findings|outcomes|conclusions|discovered|revealed|showed|demonstrated)\b/gi,
+      'Technical Details': /\b(system|technology|implementation|algorithm|framework|architecture|design)\b/gi,
+      'Business & Strategy': /\b(business|strategy|market|customer|revenue|profit|growth|competitive)\b/gi,
+      'Process & Procedures': /\b(process|procedure|method|approach|technique|workflow|steps|protocol)\b/gi,
+      'Data & Analytics': /\b(data|statistics|metrics|analytics|measurement|performance|trends)\b/gi,
+      'Recommendations': /\b(recommend|suggest|propose|should|must|need to|important to|consider)\b/gi
+    };
+    
+    const topics: Record<string, number> = {};
+    Object.entries(topicKeywords).forEach(([topic, pattern]) => {
+      const matches = text.match(pattern);
+      if (matches && matches.length >= 3) {
+        topics[topic] = matches.length;
+      }
+    });
+    
+    return Object.entries(topics)
+      .sort(([, a], [, b]) => (b as number) - (a as number))
+      .slice(0, 4)
+      .map(([topic]) => topic);
+  };
+
   const generateSummary = async () => {
     if (pdfs.length === 0) return;
     
     setIsGenerating(true);
     
-    // Simulate AI processing delay
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    // Simulate processing delay
+    await new Promise(resolve => setTimeout(resolve, 2500));
     
-    // Mock summarization - in a real app, this would call an AI service
-    const combinedText = pdfs.map(pdf => pdf.content).join('\n\n');
-    const wordCount = combinedText.split(' ').length;
+    try {
+      const combinedText = pdfs.map(pdf => pdf.content).join('\n\n');
+      const wordCount = combinedText.split(/\s+/).filter(w => w.length > 0).length;
+      const pageCount = Math.ceil(wordCount / 250); // Estimate pages
+      
+      if (combinedText.trim().length < 100) {
+        setSummary("The uploaded PDF appears to contain insufficient text content for meaningful summarization. Please ensure the PDF contains readable text and try again.");
+        setIsGenerating(false);
+        return;
+      }
+      
+      // Extract key information
+      const keyPoints = extractKeyPoints(combinedText);
+      const topics = identifyTopics(combinedText);
+      
+      // Generate structured summary
+      let summary = `# Document Summary\n\n`;
+      summary += `**Document Overview:** ${pdfs.length} PDF file(s) containing approximately ${wordCount.toLocaleString()} words (≈${pageCount} pages)\n\n`;
+      
+      if (topics.length > 0) {
+        summary += `## Main Topics Covered:\n`;
+        topics.forEach(topic => {
+          summary += `• ${topic}\n`;
+        });
+        summary += '\n';
+      }
+      
+      summary += `## Key Points & Insights:\n`;
+      keyPoints.forEach((point, index) => {
+        if (point.length > 10) {
+          summary += `${index + 1}. ${point}.\n\n`;
+        }
+      });
+      
+      // Add document-specific insights
+      const sentences = combinedText.split(/[.!?]+/).filter(s => s.trim().length > 20);
+      const firstSentences = sentences.slice(0, 3).join('. ');
+      const lastSentences = sentences.slice(-2).join('. ');
+      
+      if (firstSentences.length > 20) {
+        summary += `## Introduction:\n${firstSentences}.\n\n`;
+      }
+      
+      if (lastSentences.length > 20 && lastSentences !== firstSentences) {
+        summary += `## Conclusion:\n${lastSentences}.\n\n`;
+      }
+      
+      summary += `## Document Analysis:\n`;
+      summary += `• **Content Depth:** ${wordCount > 1000 ? 'Comprehensive' : wordCount > 500 ? 'Detailed' : 'Concise'} documentation\n`;
+      summary += `• **Structure:** ${topics.length > 2 ? 'Multi-topic' : 'Focused'} content organization\n`;
+      summary += `• **Key Information:** ${keyPoints.length} critical points identified\n\n`;
+      
+      summary += `*This summary was generated by analyzing the actual content of your uploaded PDF(s). The analysis focuses on extracting the most relevant and important information while maintaining accuracy to the source material.*`;
+      
+      setSummary(summary);
+    } catch (error) {
+      setSummary("An error occurred while generating the summary. Please try uploading the PDF again or ensure the file contains readable text content.");
+    }
     
-    const mockSummary = `This document collection contains approximately ${wordCount} words across ${pdfs.length} PDF(s). 
-
-Key themes and topics identified:
-• Main concepts and technical details are discussed throughout the documents
-• Important findings and methodologies are presented with supporting evidence
-• The content appears to cover specialized knowledge in the domain area
-• Multiple perspectives and approaches are examined in detail
-
-The documents provide comprehensive coverage of the subject matter with detailed explanations, examples, and practical applications. The content is structured to build understanding progressively from fundamental concepts to more advanced topics.
-
-This summary is based on the uploaded PDF content and provides a high-level overview of the main themes and information contained within the documents.`;
-    
-    setSummary(mockSummary);
     setIsGenerating(false);
   };
 
